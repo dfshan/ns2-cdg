@@ -236,6 +236,9 @@ void LinuxTcpAgent::time_processing(Packet* pkt, unsigned char flag, s32* seq_ur
 
 void LinuxTcpAgent::rtt_update(double tao, unsigned long pkt_seq_no)
 {
+
+	if (linux_.icsk_ca_state != TCP_CA_Open || pkt_seq_no == 0)
+		return;
 	double now = Scheduler::instance().clock();
 	if (ts_option_)
 		t_rtt_ = int(tao /tcp_tick_ + 0.5);
@@ -301,6 +304,8 @@ void LinuxTcpAgent::rtt_update(double tao, unsigned long pkt_seq_no)
 	t_rtxcur_ = (((t_rttvar_ << (rttvar_exp_ + (T_SRTT_BITS - T_RTTVAR_BITS))) +
 		t_srtt_)  >> T_SRTT_BITS ) * tcp_tick_;
 	linux_.srtt = t_srtt_;
+	//int mysrtt = t_srtt_;
+	//printf("srtt=%d\n", mysrtt);
 	return;
 }
 
@@ -316,7 +321,8 @@ void LinuxTcpAgent::recv(Packet *pkt, Handler*)
 	s32 seq_rtt;
 	unsigned char flag=0;
 
-	tcp_time_stamp = (unsigned long) (trunc(Scheduler::instance().clock() * JIFFY_RATIO)); 
+	//tcp_time_stamp = (unsigned long) (trunc(Scheduler::instance().clock() * JIFFY_RATIO)); 
+	tcp_time_stamp = (__u32) (trunc(Scheduler::instance().clock() * JIFFY_RATIO)); 
 	ktime_get_real = (s64)trunc(Scheduler::instance().clock()*1000000000);
 #ifdef notdef
 	if (pkt->type_ != PT_ACK) {

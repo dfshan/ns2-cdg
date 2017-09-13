@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include "ns-linux-util.h"
 //For sharing Reno
 
@@ -29,13 +30,34 @@ extern void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 rtt, u32 in_flight
 extern u32 tcp_reno_min_cwnd(const struct sock *sk);
 
 #define tcp_is_cwnd_limited(sk, in_flight)  ((in_flight) >= (sk)->snd_cwnd)
+
+#define tcp_in_slow_start(tp) ((tp)->snd_cwnd < (tp)->snd_ssthresh)
+/*
+ * The next routines deal with comparing 32 bit unsigned ints
+ * and worry about wraparound (automatic with unsigned arithmetic).
+ */
+
+
 //from kernel.h
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #define min(x,y) (((x)<(y))?(x):(y))
 #define max(x,y) (((x)>(y))?(x):(y))
-#define after(seq1,seq2) ((seq2)<(seq1))
+#define max3(x, y, z) max((typeof(x))max(x, y), z)
+#define before(seq1,seq2) ((seq2)>(seq1))
+#define after(seq1,seq2) ((seq2)<=(seq1))
 
+#define DIV_ROUND_CLOSEST(x, divisor)(			\
+{							\
+	typeof(x) __x = x;				\
+	typeof(divisor) __d = divisor;			\
+	(((typeof(x))-1) > 0 ||				\
+	 ((typeof(divisor))-1) > 0 ||			\
+	 (((__x) > 0) == ((__d) > 0))) ?		\
+		(((__x) + ((__d) / 2)) / (__d)) :	\
+		(((__x) - ((__d) / 2)) / (__d));	\
+}							\
+)
 
 #define HZ 1000
 
@@ -109,6 +131,7 @@ extern void record_linux_param_description(const char*, const char*, const char*
 #define EBUSY 4
 #define ENOMEM 5
 #define EPERM 6
+#define	ERANGE 34
 #define BUG_ON(x) 
 #define BUILD_BUG_ON(x)
 #define WARN_ON(x)
@@ -162,6 +185,53 @@ extern int fls64(__u64 x);
         __rem;                                                  \
  })
 
+
+#if BITS_PER_LONG == 64
+/**
+ * div_u64_rem - unsigned 64bit divide with 32bit divisor with remainder
+ *
+ * This is commonly provided by 32bit archs to provide an optimized 64bit
+ * divide.
+ */
+static inline u64 div_u64_rem(u64 dividend, u32 divisor, u32 *remainder)
+{
+	*remainder = dividend % divisor;
+	return dividend / divisor;
+}
+
+#elif BITS_PER_LONG == 32
+#ifndef div_u64_rem
+static inline u64 div_u64_rem(u64 dividend, u32 divisor, u32 *remainder)
+{
+	*remainder = do_div(dividend, divisor);
+	return dividend;
+}
+#endif
+#else
+static inline u64 div_u64_rem(u64 dividend, u32 divisor, u32 *remainder)
+{
+	*remainder = do_div(dividend, divisor);
+	return dividend;
+}
+#endif
+
+
+/**
+ * div_u64 - unsigned 64bit divide with 32bit divisor
+ *
+ * This is the most common 64bit divide and should be used if possible,
+ * as many 32bit archs can optimize this variant better than a full 64bit
+ * divide.
+ */
+#ifndef div_u64
+static inline u64 div_u64(u64 dividend, u32 divisor)
+{
+	u32 remainder;
+	return div_u64_rem(dividend, divisor, &remainder);
+}
+#endif
+
+
 #define CONG_NUM 0
 
 #define jiffies tcp_time_stamp
@@ -178,4 +248,12 @@ extern uint64_t div64_64(uint64_t dividend, uint64_t divisor);
 extern int tcp_register_congestion_control(struct tcp_congestion_ops *ca);
 extern void tcp_slow_start(struct tcp_sock *tp);
 extern void tcp_unregister_congestion_control(struct tcp_congestion_ops *ca);
+
+extern u32 prandom_u32();
+
+static inline int is_power_of_2(int x)
+{
+	return (x > 0) && ((x & (x - 1)) == 0);
+}
+
 #endif

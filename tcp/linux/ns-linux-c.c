@@ -168,5 +168,16 @@ ktime_t net_timedelta(ktime_t t)
 	return ktime_get_real - t;
 }
 
+u32 prandom_u32() {
+	u32 rnum;
+	rnum = (rand() & 0xff);
+	rnum <<= 8;
+	rnum |= (rand() & 0xff);
+	rnum <<= 8;
+	rnum |= (rand() & 0xff);
+	rnum <<= 8;
+	rnum |= (rand() & 0xff);
+	return rnum;
+}
 
 #endif

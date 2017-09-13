@@ -23,9 +23,6 @@
 
 extern struct tcp_congestion_ops tcp_reno;
 
-extern unsigned long tcp_time_stamp;
-extern long long ktime_get_real;
-
 #define JIFFY_RATIO 1000
 #define US_RATIO 1000000
 #define MS_RATIO 1000
@@ -35,20 +32,29 @@ extern long long ktime_get_real;
 
 extern void tcp_cong_avoid_register(void);
 
-#define __u64 unsigned long long
-#define __u32 unsigned long
-#define __u16 unsigned int
-#define __u8 unsigned char
+#define __u64 uint64_t
+#define __u32 uint32_t
+#define __u16 uint16_t
+#define __u8 uint8_t
 
 #define u64 __u64
 #define u32 __u32
 #define u16 __u16
 #define u8 __u8
 
-#define s32 long
-#define s64 long long
+#define s32 int32_t
+#define s64 int64_t
+
+#define U16_MAX		((u16) ~0U)
+#define U32_MAX		((u32) ~0U)
 
 #define ktime_t s64
+
+
+//extern unsigned long tcp_time_stamp;
+extern __u32 tcp_time_stamp;
+extern long long ktime_get_real;
+
 extern ktime_t net_invalid_timestamp();
 extern int ktime_equal(const ktime_t cmp1, const ktime_t cmp2);
 extern s64 ktime_to_us(const ktime_t kt);
@@ -60,6 +66,16 @@ extern ktime_t net_timedelta(ktime_t t);
 
 
 //from kernel.h
+/**
+ * min_not_zero - return the minimum that is _not_ zero, unless both are zero
+ * @x: value1
+ * @y: value2
+ */
+#define min_not_zero(x, y) ({			\
+	typeof(x) __x = (x);			\
+	typeof(y) __y = (y);			\
+	__x == 0 ? __y : ((__y == 0) ? __x : min(__x, __y)); })
+
 #define min_t(type,x,y) \
 	(((type)(x)) < ((type)(y)) ? ((type)(x)): ((type)(y)))
 
