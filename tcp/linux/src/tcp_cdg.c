@@ -38,14 +38,16 @@
 
 #define HYSTART_ACK_TRAIN	1
 #define HYSTART_DELAY		2
-#define CDG_DEBUG 0
+#define CDG_DEBUG 1
+#define DEBUG_FID 0
 
 #define U32_C(x) x ## U
 
 static int window __read_mostly = 8;
 static unsigned int backoff_beta __read_mostly = 0.7071 * 1024; /* sqrt 0.5 */
 static unsigned int backoff_factor __read_mostly = 42;
-static unsigned int hystart_detect __read_mostly = 3;
+//static unsigned int backoff_factor __read_mostly = 333;
+static unsigned int hystart_detect __read_mostly = 0;
 static unsigned int use_ineff __read_mostly = 5;
 static bool use_shadow __read_mostly = true;
 static bool use_tolerance __read_mostly = true;
@@ -100,6 +102,7 @@ struct cdg {
 	s32 delay_min;
 	u32 last_ack;
 	u32 round_start;
+	int *fid_;
 };
 
 
@@ -126,7 +129,7 @@ static void tcp_enter_cwr(struct sock *sk, const int set_ssthresh, u32 in_flight
 			tp->snd_ssthresh = icsk->icsk_ca_ops->ssthresh(sk);
 		tp->snd_cwnd = min(tp->snd_cwnd, in_flight + 1U);
 		tp->snd_cwnd_cnt = 0;
-		// tp->high_seq = tp->snd_nxt;
+		tp->high_seq = tp->snd_nxt;
 		tp->snd_cwnd_stamp = tcp_time_stamp;
 		// TCP_ECN_queue_cwr(tp);
 
@@ -235,6 +238,18 @@ static s32 tcp_cdg_grad(struct cdg *ca)
 	s32 gmin = ca->rtt.min - ca->rtt_prev.min;
 	s32 gmax = ca->rtt.max - ca->rtt_prev.max;
 	s32 grad;
+	int i;
+
+#if CDG_DEBUG==1
+	if (DEBUG_FID < 0 || *(ca->fid_) == DEBUG_FID) {
+		printf("rtt_increment: gmin=%d, gmax=%d\n", gmin, gmax);
+		printf("ca gradients: (tail=%d)\n", ca->tail);
+		for (i = 0; i < window; i++) {
+			printf(" grad[%d]=%d %d |", i, ca->gradients[i].min, ca->gradients[i].max);
+		}
+		printf("\n");
+	}
+#endif
 
 	if (ca->gradients) {
 		ca->gsum.min += gmin - ca->gradients[ca->tail].min;
@@ -245,7 +260,6 @@ static s32 tcp_cdg_grad(struct cdg *ca)
 		gmin = ca->gsum.min;
 		gmax = ca->gsum.max;
 	}
-
 	/* We keep sums to ignore gradients during cwnd reductions;
 	 * the paper's smoothed gradients otherwise simplify to:
 	 * (rtt_latest - rtt_oldest) / window.
@@ -253,6 +267,7 @@ static s32 tcp_cdg_grad(struct cdg *ca)
 	 * We also drop division by window here.
 	 */
 	grad = gmin > 0 ? gmin : gmax;
+	// grad = gmin;
 
 	/* Extrapolate missing values in gradient window: */
 	if (!ca->gfilled) {
@@ -273,20 +288,28 @@ static s32 tcp_cdg_grad(struct cdg *ca)
 		gmin = DIV_ROUND_CLOSEST(gmin, 64);
 		gmax = DIV_ROUND_CLOSEST(gmax, 64);
 
+#if CDG_DEBUG==1
+		if (DEBUG_FID < 0|| *(ca->fid_) == DEBUG_FID) {
+			printf("rttmin=%d, prevrttmin=%d\n", ca->rtt.min, ca->rtt_prev.min);
+			printf("rttmax=%d, prevrttmax=%d\n", ca->rtt.max, ca->rtt_prev.max);
+			printf("gmin=%d, gmax=%d\n", gmin, gmax);
+		}
+#endif
 		if (gmin > 0 && gmax <= 0) {
 			ca->state = CDG_FULL;
 #if CDG_DEBUG==1
-			printf("gmin=%ld, gmax=%ld\n", gmin, gmax);
+		if (DEBUG_FID < 0|| *(ca->fid_) == DEBUG_FID)
 			printf("CDG_FULL\n");
 #endif
 		}
 		else if ((gmin > 0 && gmax > 0) || gmax < 0) {
 			ca->state = CDG_NONFULL;
 #if CDG_DEBUG==1
-			printf("gmin=%ld, gmax=%ld\n", gmin, gmax);
-			printf("CDG_NOFULL\n");
+			if (DEBUG_FID < 0|| *(ca->fid_) == DEBUG_FID)
+				printf("CDG_NOFULL\n");
 #endif
 		}
+		// printf("gmin=%d, gmax=%d\n", gmin, gmax);
 	}
 	return grad;
 }
@@ -296,8 +319,9 @@ static bool tcp_cdg_backoff(struct sock *sk, u32 grad, u32 in_flight)
 	struct cdg *ca = inet_csk_ca(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (prandom_u32() <= nexp_u32(grad * backoff_factor))
+	if (prandom_u32() <= nexp_u32(grad * backoff_factor)) {
 		return false;
+	}
 
 	if (use_ineff) {
 		ca->backoff_cnt++;
@@ -336,8 +360,19 @@ static void tcp_cdg_cong_avoid(struct sock *sk, u32 ack,
 		ca->last_ack = 0;
 		ca->sample_cnt = 0;
 
-		if (grad > 0 && tcp_cdg_backoff(sk, grad, in_flight))
+		if (grad > 0 && tcp_cdg_backoff(sk, grad, in_flight)) {
+			/*tp->snd_ssthresh = max(2U, (tp->snd_cwnd * min(1024U, backoff_beta)) >> 10);
+			tp->snd_cwnd = tp->snd_ssthresh;*/
+#if CDG_DEBUG==1
+			if (DEBUG_FID < 0|| *(ca->fid_) == DEBUG_FID)
+				printf("cdg backoff\n");
+#endif
 			return;
+		}
+#if CDG_DEBUG==1
+		if (DEBUG_FID < 0|| *(ca->fid_) == DEBUG_FID)
+			printf("cdg not backoff\n");
+#endif
 	}
 
 	if (!tcp_is_cwnd_limited(sk, in_flight)) {
@@ -366,6 +401,10 @@ static void tcp_cdg_acked(struct sock *sk, u32 cnt, ktime_t last)
 	if (ktime_equal(last, net_invalid_timestamp()))
 		return;
 
+#if CDG_DEBUG==1
+	if (DEBUG_FID < 0|| *(ca->fid_) == DEBUG_FID)
+		printf("rtt: %uus\n", sample_rtt_us);
+#endif
 	/* A heuristic for filtering delayed ACKs, adapted from:
 	 * D.A. Hayes. "Timing enhancements to the FreeBSD kernel to support
 	 * delay and rate based TCP mechanisms." TR 100219A. CAIA, 2010.
@@ -401,8 +440,15 @@ static u32 tcp_cdg_ssthresh(struct sock *sk)
 
 	//printf("%d %d\n", ca->state, use_tolerance);
 	if (ca->state == CDG_NONFULL && use_tolerance) {
+#if CDG_DEBUG==1
+		if (DEBUG_FID < 0|| *(ca->fid_) == DEBUG_FID)
+			printf("ssthresh CDG NONFULL\n");
+#endif
 		return tp->snd_cwnd;
 	}
+#if CDG_DEBUG==1
+		printf("ssthresh CDG FULL\n");
+#endif
 	//printf("%d %d\n", ca->state, use_tolerance);
 
 	ca->shadow_wnd = min(ca->shadow_wnd >> 1, tp->snd_cwnd);
@@ -451,13 +497,15 @@ static void tcp_cdg_init(struct sock *sk)
 	struct cdg *ca = inet_csk_ca(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 
+	memset(ca, 0, sizeof(struct cdg));
 	/* We silently fall back to window = 1 if allocation fails. */
 	if (window > 1)
 		/*ca->gradients = kcalloc(window, sizeof(ca->gradients[0]),
 					GFP_NOWAIT | __GFP_NOWARN);*/
-		ca->gradients = calloc(window, sizeof(ca->gradients[0]));
+		ca->gradients = calloc(window, sizeof(struct cdg_minmax));
 	ca->rtt_seq = tp->snd_nxt;
 	ca->shadow_wnd = tp->snd_cwnd;
+	ca->fid_ = tp->fid_;
 }
 
 static void tcp_cdg_release(struct sock *sk)

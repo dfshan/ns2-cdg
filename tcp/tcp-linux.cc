@@ -112,6 +112,7 @@ LinuxTcpAgent::LinuxTcpAgent() :
 	linux_.bytes_acked = 0;
 	//load_to_linux_once();
 //	scb_->test();
+	linux_.fid_ = &fid_;
 }
 
 LinuxTcpAgent::~LinuxTcpAgent(){
@@ -339,7 +340,7 @@ void LinuxTcpAgent::recv(Packet *pkt, Handler*)
 	if (ack > (unsigned long)t_seqno_) return;	 // uninteresting_ack
 	if (ack < prior_snd_una) return; // old_ack; only worth for D-SACK. but let's pass it.
 
-	DEBUG(5, "received an ack packet %lu\n", ack);
+	DEBUG(5, "received an ack packet %u\n", ack);
 
 	if (linux_.icsk_ca_ops) {
 		//This has to be done before the first call to linux_.icsk_ca_ops.
@@ -360,7 +361,7 @@ void LinuxTcpAgent::recv(Packet *pkt, Handler*)
 	};
 
 	flag |= ack_processing(pkt, flag);
-	DEBUG(5, "ack_processed prior_snd_una=%lu ack=%lu\n", prior_snd_una, ack);
+	DEBUG(5, "ack_processed prior_snd_una=%u ack=%u\n", prior_snd_una, ack);
 
 	if ((tcph->sa_length()> 0) || (FLAG_DATA_ACKED && (!scb_->IsEmpty()))) {
 		flag |= scb_->UpdateScoreBoard(highest_ack_, tcph);
@@ -373,8 +374,9 @@ void LinuxTcpAgent::recv(Packet *pkt, Handler*)
 
 	if (linux_.icsk_ca_ops) {
 		if ((!initialized_)) {
-			if  (linux_.icsk_ca_ops->init)
+			if  (linux_.icsk_ca_ops->init) {
 				linux_.icsk_ca_ops->init(&linux_);	
+			}
 			initialized_ = true;
 		}
 		if ((flag & FLAG_NOT_DUP) && (linux_.icsk_ca_ops->pkts_acked)){
@@ -407,6 +409,8 @@ void LinuxTcpAgent::recv(Packet *pkt, Handler*)
 	{	\
 		if (linux_.icsk_ca_ops) {\
 			linux_.icsk_ca_ops->cong_avoid(sk, ack*linux_.mss_cache, rtt, in_flight, good);\
+			if (maxcwnd_ && (int(linux_.snd_cwnd) > maxcwnd_)) \
+				linux_.snd_cwnd = maxcwnd_;\
 		} else {\
 			opencwnd();\
 			load_to_linux();\
@@ -462,6 +466,15 @@ void LinuxTcpAgent::tcp_fastretrans_alert(unsigned char flag)
 	 *    when high_seq is ACKed. */
 	if (icsk->icsk_ca_state == TCP_CA_Open)	{
 		//no need to exit unless frto.	
+	} else if (icsk->icsk_ca_state == TCP_CA_CWR) {
+			linux_.snd_una = (highest_ack_+1)*linux_.mss_cache;
+			if (linux_.snd_una > linux_.high_seq) {
+				linux_.snd_cwnd = (linux_.snd_cwnd < linux_.snd_ssthresh ? linux_.snd_cwnd : linux_.snd_ssthresh);
+				linux_.snd_cwnd_stamp = tcp_time_stamp;
+				tcp_ca_event(CA_EVENT_COMPLETE_CWR);
+				tcp_set_ca_state(TCP_CA_Open);
+			}
+			return;
 	} else {
 		if (highest_ack_ >= recover_) {
 			DEBUG(5,"clear scoread board\n");
@@ -475,9 +488,9 @@ void LinuxTcpAgent::tcp_fastretrans_alert(unsigned char flag)
 			tcp_set_ca_state(TCP_CA_Open);
 			next_pkts_in_flight_ = 0; //stop rate halving
 			return;
-		}	
+		}
 	}
-	
+
 	DEBUG(5, "before step F: %d\n", linux_.icsk_ca_state);
 	/* F. Process state. */
 	switch (linux_.icsk_ca_state) {

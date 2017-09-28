@@ -311,7 +311,7 @@ struct tcp_sock {
 //	__u32	lost_out;	/* Lost packets			*/
 //	__u32	sacked_out;	/* SACK'd packets			*/
 //	__u32	fackets_out;	/* FACK'd packets			*/
-//	__u32	high_seq;	/* snd_nxt at onset of congestion	*/
+	__u32	high_seq;	/* snd_nxt at onset of congestion	*/
 //
 //	__u32	retrans_stamp;	/* Timestamp of the last retransmit,
 //				 * also used in SYN-SENT to remember stamp of
@@ -347,6 +347,8 @@ struct tcp_sock {
 //	} rcvq_space;
 	struct tcp_congestion_ops *icsk_ca_ops;
 	__u8			  icsk_ca_state;
+	u32 test;
+	int* fid_;
 	u32			  icsk_ca_priv[16];
 #define ICSK_CA_PRIV_SIZE	(16 * sizeof(u32))
 };
